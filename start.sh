@@ -1,178 +1,285 @@
 #!/bin/bash
-
-# ==============================================================================
-# สคริปต์ตั้งค่า Ubuntu 20.04 VPS เพื่อประสิทธิภาพสูงสุด (เน้น Network & RAM)
-# คำเตือน: รันด้วยสิทธิ์ root (sudo) และทดสอบระบบหลังใช้งาน!
-# ==============================================================================
-
-# ตรวจสอบว่ารันด้วย root หรือไม่
-if [ "$(id -u)" -ne 0 ]; then
-   echo "กรุณารันสคริปต์นี้ด้วยสิทธิ์ root (ใช้ sudo)"
-   exit 1
+# cari apa..?? harta tahta hanya sementara ingat masih ada kehidupan setelah kematian
+# jangan lupa sholat ingat ajal menantimu
+# dibawah ini bukan cd kaset ya
+cd
+rm -rf setup.sh
+clear
+red='\e[1;31m'
+green='\e[0;32m'
+yell='\e[1;33m'
+tyblue='\e[1;36m'
+BRed='\e[1;31m'
+BGreen='\e[1;32m'
+BYellow='\e[1;33m'
+BBlue='\e[1;34m'
+NC='\e[0m'
+purple() { echo -e "\\033[35;1m${*}\\033[0m"; }
+tyblue() { echo -e "\\033[36;1m${*}\\033[0m"; }
+yellow() { echo -e "\\033[33;1m${*}\\033[0m"; }
+green() { echo -e "\\033[32;1m${*}\\033[0m"; }
+red() { echo -e "\\033[31;1m${*}\\033[0m"; }
+cd /root
+#System version number
+if [ "${EUID}" -ne 0 ]; then
+		echo "You need to run this script as root"
+  sleep 5
+		exit 1
+fi
+if [ "$(systemd-detect-virt)" == "openvz" ]; then
+		echo "OpenVZ is not supported"
+  clear
+                echo "For VPS with KVM and VMWare virtualization ONLY"
+  sleep 5
+		exit 1
 fi
 
-echo ">>> เริ่มต้นการปรับแต่งประสิทธิภาพ Ubuntu 20.04..."
-CURRENT_DATE=$(date "+%Y-%m-%d %H:%M:%S")
-echo ">>> วันที่และเวลาปัจจุบัน: $CURRENT_DATE"
+localip=$(hostname -I | cut -d\  -f1)
+hst=( `hostname` )
+dart=$(cat /etc/hosts | grep -w `hostname` | awk '{print $2}')
+if [[ "$hst" != "$dart" ]]; then
+echo "$localip $(hostname)" >> /etc/hosts
+fi
+# buat folder
+mkdir -p /etc/xray
+mkdir -p /etc/v2ray
+touch /etc/xray/domain
+touch /etc/v2ray/domain
+touch /etc/xray/scdomain
+touch /etc/v2ray/scdomain
 
-# --- 1. อัปเดตระบบและแพ็คเกจพื้นฐาน ---
-echo
-echo ">>> [1/6] กำลังอัปเดตระบบและแพ็คเกจ..."
-apt update > /dev/null 2>&1
-apt upgrade -y
-apt autoremove -y
-apt clean
-echo ">>> ระบบอัปเดตเสร็จสิ้น"
 
-# --- 2. ปรับแต่งค่า Kernel (Network Performance - TCP BBR & Buffers) ---
-# ใช้ TCP BBR เป็น Congestion Control Algorithm ซึ่งมักให้ประสิทธิภาพดีกว่าบนลิงก์ที่มี Latency หรือ Packet Loss [1, 2]
-# เพิ่มขนาด Buffer เพื่อรองรับการเชื่อมต่อความเร็วสูง [1, 2]
-echo
-echo ">>> [2/6] กำลังปรับแต่งค่า Kernel สำหรับ Network (TCP BBR & Buffers)..."
-cat << EOF > /etc/sysctl.d/99-custom-network-tune.conf
-# เปิดใช้งาน TCP BBR Congestion Control
-net.core.default_qdisc=fq
-net.ipv4.tcp_congestion_control=bbr
-
-# เพิ่มขนาด TCP Buffer ให้ใหญ่ขึ้น
-net.core.rmem_max=16777216
-net.core.wmem_max=16777216
-net.ipv4.tcp_rmem=4096 87380 16777216
-net.ipv4.tcp_wmem=4096 65536 16777216
-
-# ปรับแต่ง TCP Stack อื่นๆ เพื่อประสิทธิภาพและความทนทาน
-net.ipv4.tcp_max_syn_backlog=8192       # เพิ่มขนาดคิว SYN backlog [2]
-net.core.somaxconn=8192                 # เพิ่มขนาด backlog สูงสุดของ listening sockets [2]
-net.core.netdev_max_backlog=16384       # เพิ่มขนาด backlog ของ network device queue [1]
-
-net.ipv4.tcp_fin_timeout=20             # ลดเวลาสถานะ FIN-WAIT-2
-net.ipv4.tcp_tw_reuse=1                 # อนุญาตให้ใช้ซ็อกเก็ต TIME-WAIT ซ้ำ (ระวังหากอยู่หลัง NAT ที่ซับซ้อน) [2]
-# net.ipv4.tcp_tw_recycle=0             # ไม่แนะนำให้เปิดใช้งาน (อาจทำให้เกิดปัญหาหลัง NAT) [2]
-net.ipv4.tcp_keepalive_time=600         # ลดเวลา Keepalive เพื่อตรวจจับการเชื่อมต่อที่ตายเร็วขึ้น
-net.ipv4.tcp_keepalive_probes=5
-net.ipv4.tcp_keepalive_intvl=60
-
-net.ipv4.tcp_syncookies=1               # เปิดใช้งาน SYN Cookies เพื่อป้องกัน SYN Flood Attack [2]
-net.ipv4.tcp_rfc1337=1                   # ป้องกัน Time-Wait Assassination hazards
-
-# การตั้งค่าเพิ่มเติม (อาจต้องทดสอบความเข้ากันได้กับแอปพลิเคชัน)
-# net.ipv4.tcp_fastopen=3               # เปิดใช้งาน TCP Fast Open (Client & Server)
-# net.ipv4.tcp_mtu_probing=1            # เปิดใช้งาน Path MTU Discovery probing
-
-# เพิ่มประสิทธิภาพการส่งต่อ Packet (หากใช้เป็น Router/Gateway)
-# net.ipv4.ip_forward=1
-# net.ipv6.conf.all.forwarding=1
-
-EOF
-echo ">>> สร้างไฟล์ /etc/sysctl.d/99-custom-network-tune.conf เสร็จสิ้น"
-
-# --- 3. ปรับแต่งค่า Kernel (Memory Management - Swappiness & Cache Pressure) ---
-# ลดค่า Swappiness เพื่อให้ระบบใช้ RAM จริงมากขึ้น ก่อนจะเริ่มใช้ Swap [3]
-# ลดค่า VFS Cache Pressure เพื่อให้ Kernel เก็บ Cache ของ Filesystem ไว้นานขึ้น [3]
-echo
-echo ">>> [3/6] กำลังปรับแต่งค่า Kernel สำหรับ Memory Management..."
-cat << EOF > /etc/sysctl.d/99-custom-memory-tune.conf
-# ลดการใช้งาน Swap (แนะนำ 10 สำหรับ Server ทั่วไป, อาจลดเหลือ 1 หาก RAM เยอะมากและไม่ต้องการ Swap เลย)
-vm.swappiness=10
-
-# ลดแรงกดดันในการเคลียร์ VFS cache (ช่วยรักษา cache ของ inode/dentry)
-vm.vfs_cache_pressure=50
-
-# ปกป้องหน่วยความจำขั้นต่ำ (เป็น Bytes) ไม่ให้ Kernel ใช้จนหมดเกลี้ยง
-# vm.min_free_kbytes=65536 # (ยกเลิกการคอมเมนต์หากจำเป็นจริงๆ และปรับค่าตามขนาด RAM)
-
-EOF
-echo ">>> สร้างไฟล์ /etc/sysctl.d/99-custom-memory-tune.conf เสร็จสิ้น"
-
-# --- 4. ปิดการใช้งาน Transparent Huge Pages (THP) ---
-# THP มักทำให้เกิด Latency Spike กับบางแอปพลิเคชัน (เช่น Databases) การปิดใช้งานมักจะให้ประสิทธิภาพที่เสถียรกว่า [4]
-echo
-echo ">>> [4/6] กำลังปิดการใช้งาน Transparent Huge Pages (THP) อย่างถาวร..."
-if ! grep -q "transparent_hugepage=never" /etc/default/grub; then
-    sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 transparent_hugepage=never"/' /etc/default/grub
-    update-grub
-    echo ">>> เพิ่ม transparent_hugepage=never ใน GRUB และทำการ update-grub (ต้องรีบูตเพื่อให้มีผล)"
+echo -e "[ ${BBlue}NOTES${NC} ] Before we go.. "
+sleep 0.5
+echo -e "[ ${BBlue}NOTES${NC} ] I need check your headers first.."
+sleep 0.5
+echo -e "[ ${BGreen}INFO${NC} ] Checking headers"
+sleep 0.5
+totet=`uname -r`
+REQUIRED_PKG="linux-headers-$totet"
+PKG_OK=$(dpkg-query -W --showformat='${Status}\n' $REQUIRED_PKG|grep "install ok installed")
+echo Checking for $REQUIRED_PKG: $PKG_OK
+if [ "" = "$PKG_OK" ]; then
+  sleep 0.5
+  echo -e "[ ${BRed}WARNING${NC} ] Try to install ...."
+  echo "No $REQUIRED_PKG. Setting up $REQUIRED_PKG."
+  apt-get --yes install $REQUIRED_PKG
+  sleep 0.5
+  echo ""
+  sleep 0.5
+  echo -e "[ ${BBlue}NOTES${NC} ] If error you need.. to do this"
+  sleep 0.5
+  echo ""
+  sleep 0.5
+  echo -e "[ ${BBlue}NOTES${NC} ] apt update && apt upgrade -y && reboot"
+  sleep 0.5
+  echo ""
+  sleep 0.5
+  echo -e "[ ${BBlue}NOTES${NC} ] After this"
+  sleep 0.5
+  echo -e "[ ${BBlue}NOTES${NC} ] Then run this script again"
+  echo -e "[ ${BBlue}NOTES${NC} ] enter now"
+  read
 else
-    echo ">>> Transparent Huge Pages ถูกปิดใช้งานใน GRUB แล้ว"
+  echo -e "[ ${BGreen}INFO${NC} ] Oke installed"
 fi
 
-# สร้าง Service เพื่อให้แน่ใจว่า THP ถูกปิดตั้งแต่เริ่ม Boot (เผื่อกรณี GRUB ไม่ทำงาน หรือต้องการความแน่นอน)
-cat << EOF > /etc/systemd/system/disable-thp.service
-[Unit]
-Description=Disable Transparent Huge Pages (THP)
-DefaultDependencies=no
-After=sysinit.target local-fs.target
-Before=basic.target
+ttet=`uname -r`
+ReqPKG="linux-headers-$ttet"
+if ! dpkg -s $ReqPKG  >/dev/null 2>&1; then
+  rm /root/setup.sh >/dev/null 2>&1 
+  exit
+else
+  clear
+fi
 
-[Service]
-Type=oneshot
-ExecStart=/bin/sh -c "echo 'never' > /sys/kernel/mm/transparent_hugepage/enabled"
-ExecStart=/bin/sh -c "echo 'never' > /sys/kernel/mm/transparent_hugepage/defrag"
 
-[Install]
-WantedBy=basic.target
-EOF
+secs_to_human() {
+    echo "Installation time : $(( ${1} / 3600 )) hours $(( (${1} / 60) % 60 )) minute's $(( ${1} % 60 )) seconds"
+}
+start=$(date +%s)
+ln -fs /usr/share/zoneinfo/Asia/Jakarta /etc/localtime1
 
-systemctl daemon-reload
-systemctl enable --now disable-thp.service > /dev/null 2>&1
-echo ">>> สร้างและเปิดใช้งาน systemd service 'disable-thp.service' เสร็จสิ้น"
+echo -e "[ ${BGreen}INFO${NC} ] Preparing the install file"
+apt install git curl -y >/dev/null 2>&1
+apt install python -y >/dev/null 2>&1
+echo -e "[ ${BGreen}INFO${NC} ] Aight good ... installation file is ready"
+sleep 0.5
+echo -ne "[ ${BGreen}INFO${NC} ] Check permission : "
 
-# --- 5. เพิ่มขีดจำกัด File Descriptors ---
-# เพิ่มจำนวนไฟล์สูงสุดที่ User หรือ Process สามารถเปิดได้พร้อมกัน สำคัญมากสำหรับ Web Server หรือ Service ที่มีการเชื่อมต่อสูง [5]
-echo
-echo ">>> [5/6] กำลังเพิ่มขีดจำกัด File Descriptors..."
-LIMITS_CONF="/etc/security/limits.conf"
-PAM_COMMON_SESSION="/etc/pam.d/common-session"
-PAM_COMMON_SESSION_NONINTERACTIVE="/etc/pam.d/common-session-noninteractive"
+echo -e "$BGreen Permission Accepted!$NC"
+sleep 2
 
-# เพิ่มค่าใน limits.conf หากยังไม่มี
-grep -q "* soft nofile 65536" "$LIMITS_CONF" || echo "* soft nofile 65536" >> "$LIMITS_CONF"
-grep -q "* hard nofile 131072" "$LIMITS_CONF" || echo "* hard nofile 131072" >> "$LIMITS_CONF"
-grep -q "root soft nofile 65536" "$LIMITS_CONF" || echo "root soft nofile 65536" >> "$LIMITS_CONF"
-grep -q "root hard nofile 131072" "$LIMITS_CONF" || echo "root hard nofile 131072" >> "$LIMITS_CONF"
+mkdir -p /var/lib/ >/dev/null 2>&1
+echo "IP=" >> /var/lib/ipvps.conf
 
-# ตรวจสอบและเพิ่ม pam_limits.so ใน PAM configuration หากยังไม่มี
-PAM_LIMITS_LINE="session required pam_limits.so"
-grep -q "$PAM_LIMITS_LINE" "$PAM_COMMON_SESSION" || echo "$PAM_LIMITS_LINE" >> "$PAM_COMMON_SESSION"
-grep -q "$PAM_LIMITS_LINE" "$PAM_COMMON_SESSION_NONINTERACTIVE" || echo "$PAM_LIMITS_LINE" >> "$PAM_COMMON_SESSION_NONINTERACTIVE"
+echo ""
+clear
+echo -e "$BBlue                     SETUP DOMAIN VPS     $NC"
+echo -e "$BYellow----------------------------------------------------------$NC"
+echo -e "$BGreen 1. Use Domain Random / Gunakan Domain Random $NC"
+echo -e "$BGreen 2. Choose Your Own Domain / Gunakan Domain Sendiri $NC"
+echo -e "$BYellow----------------------------------------------------------$NC"
+read -rp " input 1 or 2 / pilih 1 atau 2 : " dns
+if test $dns -eq 1; then
+curl -sL https://autoscript.caliphdev.com/ssh/cf.sh | bash
+elif test $dns -eq 2; then
+read -rp "Enter Your Domain / masukan domain : " dom
+echo "IP=$dom" > /var/lib/ipvps.conf
+echo "$dom" > /root/scdomain
+echo "$dom" > /etc/xray/scdomain
+echo "$dom" > /etc/xray/domain
+echo "$dom" > /etc/v2ray/domain
+echo "$dom" > /root/domain
+else 
+echo "Not Found Argument"
+exit 1
+fi
+echo -e "${BGreen}Done!${NC}"
+sleep 2
+clear
 
-echo ">>> เพิ่มการตั้งค่า File Descriptors ใน $LIMITS_CONF และตรวจสอบ PAM configuration"
-echo ">>> (การเปลี่ยนแปลงนี้จะมีผลกับการ Login Session ใหม่ หรือหลังจากรีบูต)"
+#install golang
+echo -e "\e[33m-----------------------------------\033[0m"
+echo -e "$BGreen      Install golang          $NC"
+echo -e "\e[33m-----------------------------------\033[0m"
+sleep 0.5
+clear
+curl -s https://go.dev/VERSION?m=text | head -n 1 | \
+    xargs -I {} wget https://go.dev/dl/{}.linux-amd64.tar.gz && \
+    tar -C /usr/local -xzf go*.linux-amd64.tar.gz && \
+    rm go*.linux-amd64.tar.gz
+#install ssh ovpn
+echo -e "\e[33m-----------------------------------\033[0m"
+echo -e "$BGreen      Install SSH Websocket           $NC"
+echo -e "\e[33m-----------------------------------\033[0m"
+sleep 0.5
+clear
+wget https://autoscript.caliphdev.com/ssh/ssh-vpn.sh && chmod +x ssh-vpn.sh && ./ssh-vpn.sh
+#Instal Update Script
+echo -e "\e[33m-----------------------------------\033[0m"
+echo -e "$BGreen      Install Update Script           $NC"
+echo -e "\e[33m-----------------------------------\033[0m"
+sleep 0.5
+clear
+wget -O /usr/bin/m-update https://autoscript.caliphdev.com/update/update.sh && chmod +x /usr/bin/m-update
+#Instal Xray
+echo -e "\e[33m-----------------------------------\033[0m"
+echo -e "$BGreen          Install XRAY              $NC"
+echo -e "\e[33m-----------------------------------\033[0m"
+sleep 0.5
+clear
+echo "Installing Bot Panel" | lolcat
+echo "Siapkan Token bot dan ID telegram mu"
+rm -rf bot.sh && wget https://raw.githubusercontent.com/gazzent/bot/main/vip/bot.sh && chmod 777 bot.sh && ./bot.sh && systemctl restart cybervpn
+wget https://autoscript.caliphdev.com/xray/ins-xray.sh && chmod +x ins-xray.sh && ./ins-xray.sh
+wget https://autoscript.caliphdev.com/sshws/insshws.sh && chmod +x insshws.sh && ./insshws.sh
+#Instal IPSec
+echo -e "\e[33m-----------------------------------\033[0m"
+echo -e "$BGreen          Install IPSec              $NC"
+echo -e "\e[33m-----------------------------------\033[0m"
+sleep 0.5
+clear
+wget https://autoscript.caliphdev.com/ipsec/ipsec.sh && chmod +x ipsec.sh && ./ipsec.sh
+wget https://autoscript.caliphdev.com/sstp/sstp.sh && chmod +x sstp.sh && ./sstp.sh
+clear
+cat> /root/.profile << END
+# ~/.profile: executed by Bourne-compatible login shells.
 
-# --- 6. ใช้การตั้งค่า Kernel ทันที ---
-echo
-echo ">>> [6/6] กำลังใช้การตั้งค่า Kernel (sysctl)..."
-sysctl -p /etc/sysctl.d/99-custom-network-tune.conf > /dev/null 2>&1
-sysctl -p /etc/sysctl.d/99-custom-memory-tune.conf > /dev/null 2>&1
-echo ">>> ใช้การตั้งค่า sysctl เสร็จสิ้น"
+if [ "$BASH" ]; then
+  if [ -f ~/.bashrc ]; then
+    . ~/.bashrc
+  fi
+fi
 
-# --- คำแนะนำเพิ่มเติม ---
-echo
-echo "=============================================================================="
-echo ">>> การปรับแต่งเบื้องต้นเสร็จสมบูรณ์!"
-echo
-echo "คำแนะนำเพิ่มเติมเพื่อประสิทธิภาพสูงสุด:"
-echo "  1.  **รีบูตเซิร์ฟเวอร์:** เพื่อให้การตั้งค่าทั้งหมด (โดยเฉพาะ GRUB และ limits.conf) มีผลสมบูรณ์"
-echo "      # sudo reboot"
-echo "  2.  **ตรวจสอบ I/O Scheduler:** สำหรับ SSD/NVMe ใน VPS แนะนำให้ใช้ 'none' หรือ 'mq-deadline'."
-echo "      ตรวจสอบตัวปัจจุบัน: # cat /sys/block/sdX/queue/scheduler (เปลี่ยน sdX เป็นชื่อดิสก์ของคุณ)"
-echo "      ตั้งค่าถาวรโดยแก้ /etc/default/grub เพิ่ม 'elevator=none' (หรือ mq-deadline) ใน GRUB_CMDLINE_LINUX แล้วรัน 'sudo update-grub' และรีบูต"
-echo "  3.  **ติดตั้งและตั้งค่า Firewall (ufw):** เพื่อความปลอดภัย"
-echo "      # sudo apt install ufw"
-echo "      # sudo ufw default deny incoming"
-echo "      # sudo ufw default allow outgoing"
-echo "      # sudo ufw allow ssh"
-echo "      # sudo ufw allow http"
-echo "      # sudo ufw allow https"
-echo "      # sudo ufw enable"
-echo "  4.  **ปิด Services ที่ไม่จำเป็น:** ตรวจสอบ service ที่รันอยู่ด้วย 'systemctl list-units --type=service --state=running' และ disable อันที่ไม่ต้องการ"
-echo "      # sudo systemctl disable <ชื่อ-service>"
-echo "      # sudo systemctl stop <ชื่อ-service>"
-echo "  5.  **ติดตั้ง Nginx/Web Server อื่นๆ และ PHP/Database (ถ้าต้องการ):** ปรับแต่ง Configuration ของ Service เหล่านั้นเพิ่มเติม (เช่น worker_processes, worker_connections ใน Nginx; memory limits ใน PHP-FPM; buffer pool ใน MySQL/MariaDB)"
-echo "  6.  **ตั้งค่า VPN (ถ้าต้องการ):** เลือกใช้ Protocol ที่มีประสิทธิภาพ เช่น WireGuard และปรับแต่งค่าเฉพาะของ VPN Server เพิ่มเติม"
-echo "  7.  **Monitoring:** ติดตั้งเครื่องมือ Monitoring (เช่น htop, netdata, Prometheus+Grafana) เพื่อติดตามผลและหาจุดคอขวดเพิ่มเติม"
-echo
-echo "!!! โปรดจำไว้ว่าต้องทดสอบระบบอย่างละเอียดหลังการเปลี่ยนแปลง !!!"
-echo "=============================================================================="
+mesg n || true
+clear
+neofetch
+echo "Type 'menu' to display the vpn menu"
+END
+chmod 644 /root/.profile
 
-exit 0
+if [ -f "/root/log-install.txt" ]; then
+rm /root/log-install.txt > /dev/null 2>&1
+fi
+if [ -f "/etc/afak.conf" ]; then
+rm /etc/afak.conf > /dev/null 2>&1
+fi
+if [ ! -f "/etc/log-create-ssh.log" ]; then
+echo "Log SSH Account " > /etc/log-create-ssh.log
+fi
+if [ ! -f "/etc/log-create-vmess.log" ]; then
+echo "Log Vmess Account " > /etc/log-create-vmess.log
+fi
+if [ ! -f "/etc/log-create-vless.log" ]; then
+echo "Log Vless Account " > /etc/log-create-vless.log
+fi
+if [ ! -f "/etc/log-create-trojan.log" ]; then
+echo "Log Trojan Account " > /etc/log-create-trojan.log
+fi
+if [ ! -f "/etc/log-create-shadowsocks.log" ]; then
+echo "Log Shadowsocks Account " > /etc/log-create-shadowsocks.log
+fi
+
+serverV=$( curl -sS https://autoscript.caliphdev.com/menu/versi  )
+echo $serverV > /opt/.ver
+aureb=$(cat /home/re_otm)
+b=11
+if [ $aureb -gt $b ]
+then
+gg="PM"
+else
+gg="AM"
+fi
+curl -sS http://checkip.amazonaws.com/ > /etc/myipvps
+echo ""
+echo "=================================================================="  | tee -a log-install.txt
+echo "      ___                                    ___         ___      "  | tee -a log-install.txt
+echo "     /  /\        ___           ___         /  /\       /__/\     "  | tee -a log-install.txt
+echo "    /  /:/_      /  /\         /__/\       /  /::\      \  \:\    "  | tee -a log-install.txt
+echo "   /  /:/ /\    /  /:/         \  \:\     /  /:/\:\      \  \:\   "  | tee -a log-install.txt
+echo "  /  /:/_/::\  /__/::\          \  \:\   /  /:/~/:/  _____\__\:\  "  | tee -a log-install.txt
+echo " /__/:/__\/\:\ \__\/\:\__   ___  \__\:\ /__/:/ /:/  /__/::::::::\ "  | tee -a log-install.txt
+echo " \  \:\ /~~/:/    \  \:\/\ /__/\ |  |:| \  \:\/:/   \  \:\~~\~~\/ "  | tee -a log-install.txt
+echo "  \  \:\  /:/      \__\::/ \  \:\|  |:|  \  \::/     \  \:\  ~~~  "  | tee -a log-install.txt
+echo "   \  \:\/:/       /__/:/   \  \:\__|:|   \  \:\      \  \:\      "  | tee -a log-install.txt
+echo "    \  \::/        \__\/     \__\::::/     \  \:\      \  \:\     "  | tee -a log-install.txt
+echo "     \__\/                       ~~~~       \__\/       \__\/ 1.0 "  | tee -a log-install.txt
+echo "=================================================================="  | tee -a log-install.txt
+echo ""
+echo "   >>> Service & Port"  | tee -a log-install.txt
+echo "   - OpenSSH                  : 22"  | tee -a log-install.txt
+echo "   - SSH Websocket            : 80" | tee -a log-install.txt
+echo "   - SSH SSL Websocket        : 443" | tee -a log-install.txt
+echo "   - Stunnel4                 : 222, 777" | tee -a log-install.txt
+echo "   - Badvpn                   : 7100-7900" | tee -a log-install.txt
+echo "   - Nginx                    : 81" | tee -a log-install.txt
+echo "   - Vmess WS TLS             : 443" | tee -a log-install.txt
+echo "   - Vless WS TLS             : 443" | tee -a log-install.txt
+echo "   - Trojan WS TLS            : 443" | tee -a log-install.txt
+echo "   - Shadowsocks WS TLS       : 443" | tee -a log-install.txt
+echo "   - Vmess WS none TLS        : 80" | tee -a log-install.txt
+echo "   - Vless WS none TLS        : 80" | tee -a log-install.txt
+echo "   - Trojan WS none TLS       : 80" | tee -a log-install.txt
+echo "   - Shadowsocks WS none TLS  : 80" | tee -a log-install.txt
+echo "   - Vmess gRPC               : 443" | tee -a log-install.txt
+echo "   - Vless gRPC               : 443" | tee -a log-install.txt
+echo "   - Trojan gRPC              : 443" | tee -a log-install.txt
+echo "   - Shadowsocks gRPC         : 443" | tee -a log-install.txt
+echo ""
+echo "=============================Contact==============================" | tee -a log-install.txt
+echo "--------------------------t.me/caliphdev--------------------------" | tee -a log-install.txt
+echo "==================================================================" | tee -a log-install.txt
+echo -e ""
+echo ""
+echo "" | tee -a log-install.txt
+rm /root/setup.sh >/dev/null 2>&1
+rm /root/ins-xray.sh >/dev/null 2>&1
+rm /root/insshws.sh >/dev/null 2>&1
+secs_to_human "$(($(date +%s) - ${start}))" | tee -a log-install.txt
+echo -e ""
+for i in {10..1}; do echo -ne "\rAuto reboot in $i Seconds "; sleep 1; done
+echo -e "Rebooting...";
+rm -rf setup.sh
+reboot
+
